@@ -5,21 +5,18 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from utils import param_count, display_loss
 from base_model import Encoder, Projector
-from SimSiam import Predictor
 from dataloader import FashionMNISTDataset
 
 
 class SimCLR(nn.Module):
-    def __init__(self, feature_dim, latent_dim, backbone='resnet-torch', freeze_backbone=False):
+    def __init__(self, feature_dim, latent_dim, backbone='resnet_torch', freeze_backbone=False):
         super(SimCLR, self).__init__()
         self.encoder = Encoder(backbone=backbone, freeze_backbone=freeze_backbone)
         self.projector = Projector(feature_dim=feature_dim, latent_dim=latent_dim)
-        self.projector2 = Predictor(latent_dim=latent_dim)  # deeper projector
 
     def forward(self, x):
         y = self.encoder(x)
         z = self.projector(y)
-        z = self.projector2(z)
         return z
 
 

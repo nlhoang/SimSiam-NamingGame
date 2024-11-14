@@ -35,7 +35,7 @@ class PredictorDecoder(nn.Module):
 
 
 class SimSiamVAE(nn.Module):
-    def __init__(self, feature_dim, latent_dim, variable_dim, backbone='resnet-torch', freeze_backbone=False):
+    def __init__(self, feature_dim, latent_dim, variable_dim, backbone='resnet_torch', freeze_backbone=False):
         super(SimSiamVAE, self).__init__()
         self.encoder = Encoder(backbone=backbone, freeze_backbone=freeze_backbone)
         self.projector = Projector(feature_dim=feature_dim, latent_dim=latent_dim)
