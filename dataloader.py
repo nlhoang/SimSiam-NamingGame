@@ -246,6 +246,91 @@ class ImageNet100Dataset(Dataset):
             return img, label
 
 
+class TinyImageNetDataset(Dataset):
+    def __init__(self, path, train=True, augmented=True, model='resnet_torch'):
+        self.train = train
+        self.augmented = augmented
+        self.root = os.path.join(path, 'ImageNetTiny200/')
+        image_size = 224 if model == 'resnet_torch' else 64
+
+        if train:
+            self.data_dir = os.path.join(self.root, 'train')
+        else:
+            self.data_dir = os.path.join(self.root, 'val')
+
+        self.imgs = []
+        self.labels = []
+        self.class_to_idx = {}
+        self.idx_to_class = {}
+        class_idx = 0
+
+        if train:
+            # Process the training directory, each class has its own folder
+            for cls in os.listdir(self.data_dir):
+                cls_path = os.path.join(self.data_dir, cls, 'images')
+                if os.path.isdir(cls_path):
+                    if cls not in self.class_to_idx:
+                        self.class_to_idx[cls] = class_idx
+                        self.idx_to_class[class_idx] = cls
+                        class_idx += 1
+
+                    # Append image paths and corresponding labels
+                    self.imgs += [os.path.join(cls_path, img) for img in os.listdir(cls_path) if img.endswith('.JPEG')]
+                    self.labels += [self.class_to_idx[cls]] * len(os.listdir(cls_path))
+        else:
+            # Process validation images
+            val_images_path = os.path.join(self.data_dir, 'images')
+            val_annotations_path = os.path.join(self.data_dir, 'val_annotations.txt')
+
+            # Parse validation annotations
+            with open(val_annotations_path, 'r') as f:
+                for line in f.readlines():
+                    parts = line.split('\t')
+                    img_name, cls = parts[0], parts[1]
+                    img_path = os.path.join(val_images_path, img_name)
+
+                    if cls not in self.class_to_idx:
+                        self.class_to_idx[cls] = class_idx
+                        self.idx_to_class[class_idx] = cls
+                        class_idx += 1
+
+                    self.imgs.append(img_path)
+                    self.labels.append(self.class_to_idx[cls])
+
+        # Define transformations
+        if self.augmented:
+            self.transform = TwoCropsTransform(transforms.Compose([
+                transforms.RandomResizedCrop(size=image_size, scale=(0.2, 1.0)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ]))
+        else:
+            self.transform = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.CenterCrop(64),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+
+    def __len__(self):
+        return len(self.imgs)
+
+    def __getitem__(self, idx):
+        img_path = self.imgs[idx]
+        label = self.labels[idx]
+        img = Image.open(img_path).convert('RGB')
+
+        if self.train and self.augmented:
+            x1, x2 = self.transform(img)
+            return x1, x2
+        else:
+            img = self.transform(img)
+            return img, label
+
+
 class DsrpitesDataset(Dataset):
     def __init__(self, npy_files):
         self.data = np.concatenate([np.load(file) for file in npy_files], axis=0)
@@ -286,8 +371,12 @@ class Shapes3DDataset(Dataset):
 
 
 if __name__ == "__main__":
-    SVHN = SVHNDataset(path='../data/', train=True)
-    FashionMNIST = FashionMNISTDataset(path='../data/', train=True)
-    CIFAR10 = CIFAR10Dataset(path='../data/', train=True)
-    ImageNet = ImageNet100Dataset(path='../data/', train=True)
+    path = '../data/'
+    # SVHN = SVHNDataset(path='../data/', train=True)
+    # FashionMNIST = FashionMNISTDataset(path='../data/', train=True)
+    # CIFAR10 = CIFAR10Dataset(path='../data/', train=True)
+    # ImageNet = ImageNet100Dataset(path='../data/', train=True)
+    train_dataset = TinyImageNetDataset(path=path, train=True, model='resnet_torch')
+    eval_dataset_train = TinyImageNetDataset(path=path, train=True, augmented=False, model='resnet_torch')
+    eval_dataset_test = TinyImageNetDataset(path=path, train=False, augmented=False, model='resnet_torch')
     print(1)

@@ -11,7 +11,7 @@ import SimSiamVI
 import SimSiamVAE
 import SimSiam
 import SimCLR
-from dataloader import FashionMNISTDataset, CIFAR10Dataset, SVHNDataset, CIFAR100Dataset, ImageNet100Dataset
+from dataloader import FashionMNISTDataset, CIFAR10Dataset, SVHNDataset, CIFAR100Dataset, ImageNet100Dataset, TinyImageNetDataset
 from utils import param_count, display_loss, Logger
 from evaluation import extract_features, train_classifier, evaluate_classifier
 IS_SERVER = False
@@ -19,8 +19,8 @@ IS_SERVER = False
 
 def args_define():
     parser = argparse.ArgumentParser(description='Train SimSiamVAE models.')
-    parser.add_argument('--eval-model', default='SimSiam', choices=['SimCLR', 'SimSiam', 'SimSiamVI', 'SimSiamVAE'])
-    parser.add_argument('--dataset', default='CIFAR100', choices=['CIFAR', 'SVHN', 'CIFAR100', 'ImageNet', 'FashionMNIST'])
+    parser.add_argument('--eval-model', default='SimCLR', choices=['SimCLR', 'SimSiam', 'SimSiamVI', 'SimSiamVAE'])
+    parser.add_argument('--dataset', default='CIFAR100', choices=['CIFAR', 'SVHN', 'CIFAR100', 'TinyImageNet', 'FashionMNIST', 'ImageNet'])
     parser.add_argument('--backbone', default='resnet_torch', choices=['cnn-img', 'cnn-mnist', 'resnet_cifar', 'resnet_torch'])
     parser.add_argument('--freeze_backbone', default=True, help='use freeze pretrained backbone')
     parser.add_argument('--batch-size', type=int, default=128, help='batch size of model [default: 128]')
@@ -50,8 +50,8 @@ def set_seeds(seed):
 def initialize(args):
     if args.dataset == 'CIFAR':
         args.backbone = 'resnet_torch'
-        args.latent_dim = 512  # 512
-        args.variable_dim = 256  # 256
+        args.latent_dim = 512
+        args.variable_dim = 256
         args.num_classes = 10
     elif args.dataset == 'SVHN':
         args.backbone = 'cnn-img'
@@ -68,11 +68,16 @@ def initialize(args):
         args.latent_dim = 512
         args.variable_dim = 256
         args.num_classes = 100
-    else:  # args.dataset == 'ImageNet':
+    elif args.dataset == 'ImageNet':
         args.backbone = 'resnet_torch'
         args.latent_dim = 2048
         args.variable_dim = 1024
         args.num_classes = 100
+    else:  # args.dataset == 'TinyImageNet200':
+        args.backbone = 'resnet_torch'
+        args.latent_dim = 2048
+        args.variable_dim = 1024
+        args.num_classes = 200
 
     if args.debug:
         # args.dataset = 'FashionMNIST'
@@ -150,6 +155,11 @@ def main():
         eval_dataset_train = CIFAR100Dataset(path=path, train=True, augmented=False, model='resnet_torch')
         eval_dataset_test = CIFAR100Dataset(path=path, train=False, augmented=False, model='resnet_torch')
         saved = args.run_path + args.eval_model + '_CIFAR100'
+    elif args.dataset == 'TinyImageNet':
+        train_dataset = TinyImageNetDataset(path=path, train=True, model='resnet_torch')
+        eval_dataset_train = TinyImageNetDataset(path=path, train=True, augmented=False, model='resnet_torch')
+        eval_dataset_test = TinyImageNetDataset(path=path, train=False, augmented=False, model='resnet_torch')
+        saved = args.run_path + args.eval_model + '_TinyImageNet'
     else:  # args.dataset == 'ImageNet'
         train_dataset = ImageNet100Dataset(path=path, train=True)
         eval_dataset_train = ImageNet100Dataset(path=path, train=True, augmented=False)
