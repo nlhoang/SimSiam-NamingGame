@@ -3,13 +3,13 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from utils import param_count, display_loss
-from base_model import Encoder, Projector
-from dataloader import FashionMNISTDataset
+from base.utils import param_count, display_loss
+from base.base_model import Encoder, Projector
+from base.dataloader import FashionMNISTDataset
 
 
 class SimCLR(nn.Module):
-    def __init__(self, feature_dim, latent_dim, backbone='resnet_torch', freeze_backbone=False):
+    def __init__(self, feature_dim, latent_dim, backbone='resnet-torch', freeze_backbone=False):
         super(SimCLR, self).__init__()
         self.encoder = Encoder(backbone=backbone, freeze_backbone=freeze_backbone)
         self.projector = Projector(feature_dim=feature_dim, latent_dim=latent_dim)
@@ -17,13 +17,12 @@ class SimCLR(nn.Module):
     def forward(self, x):
         y = self.encoder(x)
         z = self.projector(y)
+        z = F.normalize(z, dim=-1)
         return z
 
 
 def loss_fn(z_i, z_j, temperature=0.5):
     batch_size = z_i.shape[0]
-    z_i = F.normalize(z_i, dim=1)
-    z_j = F.normalize(z_j, dim=1)
 
     representations = torch.cat([z_i, z_j], dim=0)
     similarity_matrix = F.cosine_similarity(representations.unsqueeze(1), representations.unsqueeze(0), dim=2)
@@ -79,7 +78,7 @@ def train(model, dataloader, learning_rate, device, epochs=100, save_interval=10
 
 
 if __name__ == "__main__":
-    device = torch.device('cuda' if torch.cuda.is_available() else 'mps')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     train_dataset = FashionMNISTDataset(path='../data/', train=True)
     train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)

@@ -2,12 +2,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from base.utils import param_count, display_loss
+from base.base_model import Encoder, Projector
+from base.dataloader import FashionMNISTDataset
+from SimSiam import Predictor
 from torch.distributions import constraints
 from torch.distributions.distribution import Distribution
-from torch.utils.data import DataLoader
-from utils import param_count, display_loss
-from base_model import Encoder, Projector
-from dataloader import FashionMNISTDataset
 
 
 class PowerSpherical(Distribution):
@@ -20,16 +21,19 @@ class PowerSpherical(Distribution):
         batch_shape, event_shape = loc.shape[:-1], loc.shape[-1:]
         super(PowerSpherical, self).__init__(batch_shape, event_shape, validate_args)
 
-    def rsample(self, sample_shape=torch.Size()):
-        shape = self._extended_shape(sample_shape)
-        norm = torch.randn(shape, dtype=self.loc.dtype, device=self.loc.device)
-        norm = norm / norm.norm(dim=-1, keepdim=True)
-        scaled = norm * (1 - torch.exp(-self.scale))
-        return self.loc + scaled
-
     def log_prob(self, value):
+        # Normalize loc and value (optional but safer if you expect unit vectors)
+        value = F.normalize(value, dim=-1)
+
+        # Clamp scale to avoid log(0) or division by 0
+        scale = self.scale.clamp(min=1e-3, max=10.0)
+
+        # Compute diff and safe log-prob per sample
         diff = value - self.loc
-        return -0.5 * ((diff / self.scale) ** 2).sum(dim=-1) - self.scale.log().sum()
+        squared_term = -0.5 * ((diff / scale) ** 2).sum(dim=-1)  # shape: [batch]
+        log_term = -scale.log().squeeze(-1)  # shape: [batch] if scale is [batch, 1]
+
+        return squared_term + log_term  # shape: [batch]
 
     @property
     def mean(self):
@@ -40,12 +44,12 @@ class PowerSpherical(Distribution):
         return self.scale ** 2
 
 
-class Predictor(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(Predictor, self).__init__()
-        self.fc1 = nn.Linear(input_dim, input_dim // 2)
-        self.bn1 = nn.BatchNorm1d(input_dim // 2)
-        self.fc2 = nn.Linear(input_dim // 2, output_dim)
+class PredictorKappa(nn.Module):
+    def __init__(self, latent_dim):
+        super(PredictorKappa, self).__init__()
+        self.fc1 = nn.Linear(latent_dim, latent_dim // 4)
+        self.bn1 = nn.BatchNorm1d(latent_dim // 4)
+        self.fc2 = nn.Linear(latent_dim // 4, 1)
 
     def forward(self, x):
         x = F.relu(self.bn1(self.fc1(x)))
@@ -54,12 +58,12 @@ class Predictor(nn.Module):
 
 
 class SimSiamVI(nn.Module):
-    def __init__(self, feature_dim, latent_dim, backbone='resnet_torch', freeze_backbone=False):
+    def __init__(self, feature_dim, latent_dim, backbone='resnet-torch', freeze_backbone=False):
         super(SimSiamVI, self).__init__()
         self.encoder = Encoder(backbone=backbone, freeze_backbone=freeze_backbone)
         self.projector = Projector(feature_dim=feature_dim, latent_dim=latent_dim)
-        self.predictor_mu = Predictor(input_dim=latent_dim, output_dim=latent_dim)
-        self.predictor_kappa = Predictor(input_dim=feature_dim, output_dim=1)
+        self.predictor_mu = Predictor(latent_dim=latent_dim)
+        self.predictor_kappa = PredictorKappa(latent_dim=feature_dim)
 
     def forward(self, x1, x2):
         y1 = self.encoder(x1)
@@ -68,11 +72,11 @@ class SimSiamVI(nn.Module):
         z1 = self.projector(y1)
         z2 = self.projector(y2)
 
-        mu1 = self.predictor_mu(z1)
-        mu2 = self.predictor_mu(z2)
+        mu1 = F.normalize(self.predictor_mu(z1), dim=-1)  # Unit norm
+        mu2 = F.normalize(self.predictor_mu(z2), dim=-1)
 
-        kappa1 = F.softplus(self.predictor_kappa(y1)) + 1e-6  # Ensure kappa is positive
-        kappa2 = F.softplus(self.predictor_kappa(y2)) + 1e-6  # Ensure kappa is positive
+        kappa1 = F.softplus(self.predictor_kappa(y1)) + 1e-3  # Ensure kappa is positive
+        kappa2 = F.softplus(self.predictor_kappa(y2)) + 1e-3
 
         dist1 = PowerSpherical(mu1, kappa1)
         dist2 = PowerSpherical(mu2, kappa2)
@@ -89,9 +93,9 @@ def loss_fn(z1, z2, dist1, dist2):
 
 def train(model, dataloader, learning_rate, device, epochs=100, save_interval=100, save_prefix='SimSiamVI_CIFAR'):
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    scaler = torch.amp.GradScaler(device='cuda')
     model.train()
-    D = len(dataloader.dataset)
     loss_history = []
 
     for epoch in range(epochs):
@@ -99,13 +103,17 @@ def train(model, dataloader, learning_rate, device, epochs=100, save_interval=10
         for batch_idx, (x1, x2) in enumerate(dataloader):
             x1, x2 = x1.to(device), x2.to(device)
             optimizer.zero_grad()
-            z1, z2, dist1, dist2 = model(x1, x2)
-            loss = loss_fn(z1, z2, dist1, dist2)
-            train_loss += loss.item()
-            loss.backward()
-            optimizer.step()
 
-        avg_loss = train_loss / D
+            with torch.amp.autocast(device_type='cuda', enabled=True):
+                z1, z2, dist1, dist2 = model(x1, x2)
+                loss = loss_fn(z1, z2, dist1, dist2)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            train_loss += loss.item()
+
+        avg_loss = train_loss / len(dataloader)
         loss_history.append(avg_loss)
         print(f'====> Epoch [{epoch+1}/{epochs}], Avg Total Loss: {avg_loss:.4f}')
         scheduler.step()
@@ -122,9 +130,10 @@ def train(model, dataloader, learning_rate, device, epochs=100, save_interval=10
 
 
 if __name__ == "__main__":
-    device = torch.device('cuda' if torch.cuda.is_available() else 'mps')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-    train_dataset = FashionMNISTDataset(path='../data/', train=True)
+    path = '../../MachineLearning/data/'
+    train_dataset = FashionMNISTDataset(path=path, train=True)
     train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
 
     # Training
